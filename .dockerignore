@@ -1,0 +1,9 @@
+.git
+build
+ffmpeg
+mpv
+libuam
+src/imgui
+src/implot
+src/inih
+.github

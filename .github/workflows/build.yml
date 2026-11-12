@@ -1,0 +1,88 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DEPS_REV: caeec83b-67c2e3f2-f8c9eef0-1dfbb100-18c72431-cd5f9397
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Fetch pinned dependencies
+        run: bash tools/fetch-deps.sh
+
+      - name: Restore compiled libraries
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/ffmpeg
+            build/mpv
+            build/libuam
+            build/install
+          key: deps-${{ env.DEPS_REV }}-${{ hashFiles('Dockerfile', 'Makefile', 'tools/fetch-deps.sh') }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build toolchain image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: cherry-switch-builder
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build CherryPlayer
+        run: |
+          docker run --rm --name cherry-switch-build \
+            -v "${{ github.workspace }}:/mnt/" \
+            cherry-switch-builder \
+            bash -c '
+              set -euxo pipefail
+              git config --global --add safe.directory "*"
+              cd /mnt/
+              JOBS=$(nproc)
+              if [ ! -f build/install/lib/libavcodec.a ]; then
+                make configure-ffmpeg
+                make build-ffmpeg -j"$JOBS"
+              fi
+              if [ ! -f build/install/lib/libuam.a ]; then
+                make configure-uam
+                make build-uam
+              fi
+              if [ ! -f build/install/lib/libmpv.a ]; then
+                make configure-mpv
+                make build-mpv
+              fi
+              make dist -j"$JOBS"
+              ls -l build/*.zip build/CherryPlayer.nro
+            '
+
+      - name: Verify release package
+        run: python3 tools/verify_zip.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: CherryPlayer-Switch
+          path: build/CherryPlayer-*.zip
+          if-no-files-found: error
